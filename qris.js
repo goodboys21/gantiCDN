@@ -2,16 +2,15 @@ const axios = require('axios');
 const fs = require('fs');
 const FormData = require('form-data');
 const QRCode = require('qrcode');
-const https = require("https"); // Tambahin ini
+const https = require("https"); // Tambahin ini buat SSL fix
 
-
+// Fungsi CRC16 buat validasi QRIS
 function convertCRC16(str) {
     let crc = 0xFFFF;
     const strlen = str.length;
 
     for (let c = 0; c < strlen; c++) {
         crc ^= str.charCodeAt(c) << 8;
-
         for (let i = 0; i < 8; i++) {
             if (crc & 0x8000) {
                 crc = (crc << 1) ^ 0x1021;
@@ -27,26 +26,30 @@ function convertCRC16(str) {
     return hex;
 }
 
+// Generate ID transaksi unik
 function generateTransactionId() {
     return Math.random().toString(36).substring(2, 10);
 }
 
+// Set waktu kadaluarsa QR
 function generateExpirationTime() {
     const expirationTime = new Date();
     expirationTime.setMinutes(expirationTime.getMinutes() + 30);
     return expirationTime;
 }
 
-async function elxyzFile(Path) {
+// Fungsi upload ke server
+async function uploadFile(filePath) {
     return new Promise(async (resolve, reject) => {
-        if (!fs.existsSync(Path)) return reject(new Error("File not Found"));
+        if (!fs.existsSync(filePath)) return reject(new Error("File tidak ditemukan"));
 
         try {
             const form = new FormData();
-            form.append("file", fs.createReadStream(Path));
+            form.append("file", fs.createReadStream(filePath));
 
-            const response = await axios.post('https://cdn.rafaelxd.tech/', form, {
+            const response = await axios.post('https://cdn.bgs.ct.ws/upload', form, {
                 headers: form.getHeaders(),
+                httpsAgent: new https.Agent({ rejectUnauthorized: false }), // Fix SSL error
                 onUploadProgress: (progressEvent) => {
                     if (progressEvent.lengthComputable) {
                         console.log(`🚀 Upload Progress: ${(progressEvent.loaded * 100) / progressEvent.total}%`);
@@ -54,14 +57,20 @@ async function elxyzFile(Path) {
                 }
             });
 
-            resolve(response.data);
+            console.log("🚀 Server Response:", response.data);
+
+            if (response.data.status === "success" && response.data.fileUrl) {
+                resolve(response.data.fileUrl);
+            } else {
+                reject(new Error(`Gagal upload: ${response.data.message || "Tidak ada fileUrl"}`));
+            }
         } catch (error) {
             reject(error);
         }
     });
 }
 
-
+// Fungsi buat generate QRIS
 async function createQRIS(amount, codeqr) {
     try {
         let qrisData = codeqr;
@@ -75,37 +84,26 @@ async function createQRIS(amount, codeqr) {
 
         const result = step2[0] + uang + step2[1] + convertCRC16(step2[0] + uang + step2[1]);
 
-        const qrCodeBuffer = await QRCode.toBuffer(result);
+        // Generate QR code image
+        const qrImagePath = "./qr_image.png";
+        await QRCode.toFile(qrImagePath, result);
 
-        const form = new FormData();
-        form.append('file', qrCodeBuffer, { filename: 'qr_image.png', contentType: 'image/png' });
+        // Upload QR image ke server
+        const qrImageUrl = await uploadFile(qrImagePath);
 
-       const response = await axios.post("https://cdn.bgs.ct.ws/upload", form, {
-    headers: form.getHeaders(),
-    httpsAgent: new https.Agent({ rejectUnauthorized: false }), // Fix SSL
-    onUploadProgress: (progressEvent) => {
-        if (progressEvent.lengthComputable) {
-            console.log(`🚀 Upload Progress: ${(progressEvent.loaded * 100) / progressEvent.total}%`);
-        }
+        return {
+            transactionId: generateTransactionId(),
+            amount: amount,
+            expirationTime: generateExpirationTime(),
+            qrImageUrl: qrImageUrl,
+            status: "active"
+        };
+    } catch (error) {
+        throw error;
     }
-});
-
-// Debug respons server
-console.log("🚀 Server Response:", response.data);
-
-if (response.data.status === "success" && response.data.fileUrl) {
-    return {
-        transactionId: generateTransactionId(),
-        amount: amount,
-        expirationTime: generateExpirationTime(),
-        qrImageUrl: response.data.fileUrl, // Ambil URL dari respons
-        status: "active"
-    };
-} else {
-    throw new Error(`Gagal upload QR: ${response.data.message || "Tidak ada fileUrl"}`);
 }
 
 module.exports = {
   createQRIS,
-  elxyzFile
-}
+  uploadFile
+};
