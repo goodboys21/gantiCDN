@@ -1,8 +1,7 @@
 const axios = require("axios");
-const fs = require("fs");
 const FormData = require("form-data");
 const QRCode = require("qrcode");
-const https = require("https"); // Tambahin ini buat bypass SSL
+const https = require("https"); // Bypass SSL
 
 function convertCRC16(str) {
     let crc = 0xFFFF;
@@ -25,27 +24,6 @@ function generateExpirationTime() {
     return expirationTime;
 }
 
-async function uploadFile(filePath) {
-    try {
-        if (!fs.existsSync(filePath)) {
-            throw new Error("File tidak ditemukan");
-        }
-
-        const form = new FormData();
-        form.append("file", fs.createReadStream(filePath));
-
-        const response = await axios.post("https://cdn.bgs.ct.ws/upload", form, {
-            headers: form.getHeaders(),
-            httpsAgent: new https.Agent({ rejectUnauthorized: false }) // Fix SSL
-        });
-
-        return response.data.fileUrl;
-    } catch (error) {
-        console.error("❌ Gagal upload file:", error.message);
-        return null;
-    }
-}
-
 async function createQRIS(amount, codeqr) {
     try {
         let qrisData = codeqr.slice(0, -4);
@@ -56,18 +34,29 @@ async function createQRIS(amount, codeqr) {
         let uang = "54" + ("0" + amount.length).slice(-2) + amount + "5802ID";
         const result = step2[0] + uang + step2[1] + convertCRC16(step2[0] + uang + step2[1]);
 
-        const qrImagePath = "./qr_image.png";
-        await QRCode.toFile(qrImagePath, result);
+        // Generate QR Code langsung ke buffer (bukan file)
+        const qrCodeBuffer = await QRCode.toBuffer(result);
 
-        const qrImageUrl = await uploadFile(qrImagePath);
-        if (!qrImageUrl) throw new Error("Gagal upload QR code");
+        // Upload buffer ke CDN
+        const form = new FormData();
+        form.append("file", qrCodeBuffer, { filename: "qr_image.png", contentType: "image/png" });
+
+        const response = await axios.post("https://cdn.bgs.ct.ws/upload", form, {
+            headers: form.getHeaders(),
+            httpsAgent: new https.Agent({ rejectUnauthorized: false }) // Fix SSL
+        });
+
+        if (!response.data.fileUrl) throw new Error("Gagal upload QR code");
 
         return {
-            transactionId: generateTransactionId(),
-            amount,
-            expirationTime: generateExpirationTime(),
-            qrImageUrl,
-            status: "active"
+            success: true,
+            data: {
+                transactionId: generateTransactionId(),
+                amount,
+                expirationTime: generateExpirationTime(),
+                qrImageUrl: response.data.fileUrl,
+                status: "active"
+            }
         };
     } catch (error) {
         console.error("❌ Error generating QRIS:", error.message);
